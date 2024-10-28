@@ -11,6 +11,8 @@ import (
 	"github.com/pion/rtp"
 )
 
+const rtxSsrcByteLength = 2
+
 // PacketFactory allows custom logic around the handle of RTP Packets before they added to the RTPBuffer.
 // The NoOpPacketFactory doesn't copy packets, while the RetainablePacket will take a copy before adding
 type PacketFactory interface {
@@ -68,35 +70,38 @@ func (m *PacketFactoryCopy) NewPacket(header *rtp.Header, payload []byte, rtxSsr
 		if !ok {
 			return nil, errFailedToCastPayloadPool
 		}
-
-		buf := (*p.buffer)[:0]
-		size := copy(buf, payload)
-		p.payload = buf[:size]
+		if rtxSsrc != 0 && rtxPayloadType != 0 {
+			size := copy((*p.buffer)[rtxSsrcByteLength:], payload)
+			p.payload = (*p.buffer)[:size+rtxSsrcByteLength]
+		} else {
+			size := copy(*p.buffer, payload)
+			p.payload = (*p.buffer)[:size]
+		}
 	}
 
 	if rtxSsrc != 0 && rtxPayloadType != 0 {
-		// Store the original sequence number and rewrite the sequence number.
-		originalSequenceNumber := p.header.SequenceNumber
-		p.header.SequenceNumber = m.rtxSequencer.NextSequenceNumber()
+		if payload == nil {
+			p.buffer, ok = m.payloadPool.Get().(*[]byte)
+			if !ok {
+				return nil, errFailedToCastPayloadPool
+			}
+			p.payload = (*p.buffer)[:rtxSsrcByteLength]
+		}
+		// Write the original sequence number at the beginning of the payload.
+		binary.BigEndian.PutUint16(p.payload, p.header.SequenceNumber)
 
 		// Rewrite the SSRC.
 		p.header.SSRC = rtxSsrc
 		// Rewrite the payload type.
 		p.header.PayloadType = rtxPayloadType
-
+		// Rewrite the sequence number.
+		p.header.SequenceNumber = m.rtxSequencer.NextSequenceNumber()
 		// Remove padding if present.
-		paddingLength := 0
 		if p.header.Padding && p.payload != nil && len(p.payload) > 0 {
-			paddingLength = int(p.payload[len(p.payload)-1])
+			paddingLength := int(p.payload[len(p.payload)-1])
 			p.header.Padding = false
+			p.payload = (*p.buffer)[:len(p.payload)-paddingLength]
 		}
-
-		// Write the original sequence number at the beginning of the payload.
-		payloadLen := 2 + len(p.payload) - paddingLength
-		newPayload := make([]byte, payloadLen)
-		binary.BigEndian.PutUint16(newPayload[:2], originalSequenceNumber)
-		copy(newPayload[2:], p.payload[:len(p.payload)-paddingLength])
-		p.payload = newPayload
 	}
 
 	return p, nil
