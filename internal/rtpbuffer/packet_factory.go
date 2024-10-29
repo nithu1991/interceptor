@@ -44,6 +44,18 @@ func NewPacketFactoryCopy() *PacketFactoryCopy {
 	}
 }
 
+func copyHeader(dest, src *rtp.Header) {
+	dest.Version = src.Version
+	dest.Padding = src.Padding
+	dest.Extension = src.Extension
+	dest.CSRC = append(dest.CSRC[:0], src.CSRC...) // Copy CSRC slice
+	dest.Marker = src.Marker
+	dest.PayloadType = src.PayloadType
+	dest.SequenceNumber = src.SequenceNumber
+	dest.Timestamp = src.Timestamp
+	dest.SSRC = src.SSRC
+}
+
 // NewPacket constructs a new RetainablePacket that can be added to the RTPBuffer
 func (m *PacketFactoryCopy) NewPacket(header *rtp.Header, payload []byte, rtxSsrc uint32, rtxPayloadType uint8) (*RetainablePacket, error) {
 	if len(payload) > maxPayloadLen {
@@ -63,7 +75,9 @@ func (m *PacketFactoryCopy) NewPacket(header *rtp.Header, payload []byte, rtxSsr
 		return nil, errFailedToCastHeaderPool
 	}
 
-	*p.header = header.Clone()
+	copyHeader(p.header, header)
+	defer m.headerPool.Put(p.header)
+	//*p.header = header.Clone()
 
 	if payload != nil {
 		p.buffer, ok = m.payloadPool.Get().(*[]byte)
